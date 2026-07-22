@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 function Get-CodexPython {
     $runtimeRoot = Join-Path $env:USERPROFILE '.cache\codex-runtimes'
@@ -19,10 +19,28 @@ function Get-CodexPython {
     throw '找不到 Codex 内置 Python 运行时或 PATH 中的 python.exe。需要 Python 3.11 或更高版本。'
 }
 
+function Invoke-PythonCode {
+    param(
+        [Parameter(Mandatory = $true)][string]$Code,
+        [string[]]$ArgumentList = @()
+    )
+
+    $python = Get-CodexPython
+    $encodedCode = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Code))
+    $nativeArguments = @(
+        '-c'
+        'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))'
+        $encodedCode
+    ) + $ArgumentList
+    & $python @nativeArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python 辅助代码执行失败，退出码：$LASTEXITCODE"
+    }
+}
+
 function Get-TailHash {
     param([string]$Path)
 
-    $python = Get-CodexPython
     $code = @'
 import hashlib
 import sys
@@ -37,10 +55,7 @@ with open(sys.argv[1], "rb") as handle:
         digest.update(chunk)
 print(digest.hexdigest())
 '@
-    & $python -c $code $Path
-    if ($LASTEXITCODE -ne 0) {
-        throw "无法计算会话正文哈希：$Path"
-    }
+    Invoke-PythonCode -Code $code -ArgumentList @($Path)
 }
 
 $scriptRoot = Split-Path -Parent $PSScriptRoot
@@ -67,7 +82,6 @@ model_provider = "bingchaai"
 base_url = "http://127.0.0.1:48800/v1"
 '@, [System.Text.UTF8Encoding]::new($false))
 
-$python = Get-CodexPython
 $createDatabase = @'
 import sqlite3
 import sys
@@ -79,10 +93,7 @@ conn.execute("INSERT INTO threads VALUES ('archived', 'openai', 'vscode')")
 conn.commit()
 conn.close()
 '@
-& $python -c $createDatabase (Join-Path $fixtureRoot 'state_5.sqlite')
-if ($LASTEXITCODE -ne 0) {
-    throw '无法创建 SQLite 测试夹具。'
-}
+Invoke-PythonCode -Code $createDatabase -ArgumentList @((Join-Path $fixtureRoot 'state_5.sqlite'))
 
 $activeBodyHash = Get-TailHash -Path $activeFile
 $archivedBodyHash = Get-TailHash -Path $archivedFile
@@ -122,10 +133,7 @@ conn.close()
 if providers != {"bingchaai"} or integrity != "ok":
     raise SystemExit(1)
 '@
-& $python -c $verifyDatabase (Join-Path $fixtureRoot 'state_5.sqlite')
-if ($LASTEXITCODE -ne 0) {
-    throw 'SQLite provider 或完整性验证失败。'
-}
+Invoke-PythonCode -Code $verifyDatabase -ArgumentList @((Join-Path $fixtureRoot 'state_5.sqlite'))
 
 $backupDirectories = @(Get-ChildItem -LiteralPath $backupRoot -Directory)
 if ($backupDirectories.Count -ne 1) {
